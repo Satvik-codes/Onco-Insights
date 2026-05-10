@@ -1,9 +1,10 @@
-# Cancer Gene Validation Copilot
+# Onco-Insights: Cancer Gene Validation Copilot
 
 ## 1. Project Overview
-The Cancer Gene Validation Copilot is a full-stack, AI-powered exploratory bioinformatics tool. It allows researchers to evaluate the potential of specific genes as prognostic biomarkers across major cancer types (e.g., Breast, Lung, Colon). 
-
+**Onco-Insights** is a full-stack, AI-powered exploratory bioinformatics tool. It allows researchers to evaluate the potential of specific genes as prognostic biomarkers across major cancer types (e.g., Breast, Lung, Colon) by integrating expression, survival, and mutation data.
 **Disclaimer:** This platform is for exploratory research purposes only. It is not clinically validated and should not be used for medical diagnosis, treatment planning, or clinical decision-making.
+
+**GitHub Repository:** [https://github.com/Satvik-codes/Onco-Insights](https://github.com/Satvik-codes/Onco-Insights)
 
 ## 2. Architecture Overview
 ```text
