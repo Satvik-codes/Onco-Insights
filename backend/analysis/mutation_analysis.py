@@ -1,37 +1,63 @@
-import pandas as pd
+"""
+Mutation analysis — memory-optimized.
+
+Changes from original:
+- Uses load_mutations() with gene filtering at load time
+- Downcasts numeric types
+- Explicit cleanup of DataFrames
+- Memory-aware logging
+"""
 import json
 import plotly.graph_objects as go
-from pathlib import Path
-from typing import Dict, Any
 
 from backend.config import PROCESSED_MUTATION_DIR
 from backend.utils.logger import StructuredLogger
+from backend.utils.data_loader import load_mutations, cleanup_dataframe, get_cohort_size
+from backend.utils.memory import log_memory, downcast_numeric, force_gc
 
 logger = StructuredLogger(__name__)
 
-def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
+
+def standardize_mutation_type(variant_class: str) -> str:
+    if variant_class is None:
+        return "Other"
+
+    v = str(variant_class).strip().lower()
+
+    if "missense" in v:
+        return "Missense"
+    elif "nonsense" in v:
+        return "Nonsense"
+    elif "frame_shift" in v or "frameshift" in v:
+        return "Frameshift"
+    elif "splice" in v:
+        return "Splice Site"
+    elif "in_frame" in v or "inframe" in v:
+        return "In-frame Indel"
+    elif "silent" in v:
+        return "Silent"
+    else:
+        return "Other"
+
+
+def run_mutation_analysis(gene: str, cancer: str) -> dict:
+    """
+    Runs mutation analysis with memory-efficient data loading.
+    Only loads mutation data for the requested cancer type and gene.
+    """
     logger.info("Starting mutation analysis", metadata={"gene": gene, "cancer": cancer})
-    
-    # Step 1: Load processed mutation data
-    mutation_path = PROCESSED_MUTATION_DIR / f"{cancer.lower()}_mutations.parquet"
-    cohort_sizes_path = PROCESSED_MUTATION_DIR / "cohort_sizes.json"
-    
-    try:
-        with open(cohort_sizes_path, 'r', encoding='utf-8') as f:
-            cohort_sizes = json.load(f)
-            
-        cohort_size = cohort_sizes.get(cancer)
-        if not cohort_size:
-            raise ValueError(f"Cohort size not found for {cancer}")
-            
-        df = pd.read_parquet(mutation_path)
-    except Exception as e:
-        logger.error("Failed to load mutation data", exc_info=True)
-        raise ValueError(f"Could not load mutation data for {cancer}")
-        
-    # Step 2: Filter for queried gene
-    gene_df = df[df['Hugo_Symbol'] == gene]
-    
+    log_memory(f"mut_start_{gene}_{cancer}")
+
+    # Step 1: Load cohort size (tiny JSON, cached at module level)
+    cohort_size = get_cohort_size(cancer)
+    if cohort_size == 0:
+        raise ValueError(f"Cohort size not found for {cancer}")
+
+    # Step 2: Load only the requested gene's mutations
+    gene_df = load_mutations(cancer, gene=gene)
+
+    log_memory(f"mut_loaded_{gene}_{cancer}")
+
     # Step 3: Compute frequency
     if gene_df.empty:
         mutated_patients = 0
@@ -41,7 +67,7 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
         mutated_patients = int(gene_df['normalized_id'].nunique())
         mutation_frequency = float((mutated_patients / cohort_size) * 100)
         has_mutations = True
-        
+
     # Step 4: Compute distribution
     types_dict = {
         "Missense": 0,
@@ -52,7 +78,7 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
         "Silent": 0,
         "Other": 0
     }
-    
+
     if has_mutations:
         type_counts = gene_df['mutation_type'].value_counts().to_dict()
         for t, count in type_counts.items():
@@ -60,12 +86,11 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
                 types_dict[t] = int(count)
             else:
                 types_dict["Other"] += int(count)
-                
+
     # Step 5: Visualizations
-    
     # Fig 1: Frequency card
     fig1 = go.Figure()
-    
+
     fig1.add_trace(go.Bar(
         x=[mutation_frequency],
         y=[gene],
@@ -74,7 +99,7 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
         text=f"{mutation_frequency:.1f}% of {cohort_size} patients",
         textposition='auto'
     ))
-    
+
     fig1.update_layout(
         title=f"{gene} Mutation Frequency in {cancer}",
         xaxis=dict(title="Mutation Rate (%)", range=[0, max(10, mutation_frequency + 5)]),
@@ -84,14 +109,14 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
         margin=dict(l=20, r=20, t=50, b=40)
     )
     freq_plot_json = json.loads(fig1.to_json())
-    
+
     # Fig 2: Type distribution
     fig2 = go.Figure()
-    
+
     if has_mutations:
         labels = [k for k, v in types_dict.items() if v > 0]
         values = [v for k, v in types_dict.items() if v > 0]
-        
+
         fig2.add_trace(go.Pie(
             labels=labels,
             values=values,
@@ -107,14 +132,17 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
         )
         fig2.update_xaxes(visible=False)
         fig2.update_yaxes(visible=False)
-        
+
     fig2.update_layout(
         title=f"{gene} Mutation Types in {cancer}",
         height=400,
         template="simple_white"
     )
     type_plot_json = json.loads(fig2.to_json())
-    
+
+    # Cleanup
+    cleanup_dataframe(gene_df)
+
     result = {
         "gene": str(gene),
         "cancer": str(cancer),
@@ -126,6 +154,7 @@ def run_mutation_analysis(gene: str, cancer: str) -> Dict[str, Any]:
         "frequency_plot_json": freq_plot_json,
         "type_plot_json": type_plot_json
     }
-    
+
+    log_memory(f"mut_complete_{gene}_{cancer}")
     logger.info("Mutation analysis completed successfully")
     return result
