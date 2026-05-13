@@ -8,12 +8,14 @@ from backend.utils.validators import validate_analysis_request
 from backend.utils.cache_manager import cache
 from backend.utils.logger import StructuredLogger
 from backend.utils.report_generator import generate_pdf_report
+from backend.utils.memory import log_memory, force_gc
 import asyncio
 from datetime import datetime
 import httpx
 
 logger = StructuredLogger(__name__)
 router = APIRouter()
+
 
 @router.post("/analyze", response_model=FullAnalysisResponse)
 async def analyze_full(request: AnalysisRequest, background_tasks: BackgroundTasks):
@@ -29,33 +31,43 @@ async def analyze_full(request: AnalysisRequest, background_tasks: BackgroundTas
             "mutation": {"status": "error", "error": {"error": True, "error_code": "VALIDATION_ERROR", "message": "Invalid request", "details": errors}},
             "interpretation": {"status": "error", "error": {"error": True, "error_code": "VALIDATION_ERROR", "message": "Invalid request", "details": errors}},
         }
-        
+
     cached = cache.get("full", gene, cancer)
     if cached:
         return cached
 
-    # Run in parallel
-    exp_task = analyze_expression(request)
-    surv_task = analyze_survival(request)
-    mut_task = analyze_mutation(request)
-    
-    exp_res, surv_res, mut_res = await asyncio.gather(exp_task, surv_task, mut_task)
-    
+    log_memory(f"analyze_start_{gene}_{cancer}")
+
+    # Run analyses SEQUENTIALLY to avoid simultaneous memory spikes.
+    # Each analysis loads its own data, processes, and releases memory
+    # before the next one starts. This keeps peak memory ~1x instead of ~3x.
+    exp_res = await analyze_expression(request)
+    log_memory(f"after_expression_{gene}_{cancer}")
+    force_gc()
+
+    surv_res = await analyze_survival(request)
+    log_memory(f"after_survival_{gene}_{cancer}")
+    force_gc()
+
+    mut_res = await analyze_mutation(request)
+    log_memory(f"after_mutation_{gene}_{cancer}")
+    force_gc()
+
     exp_success = exp_res.get("status") == "success"
     surv_success = surv_res.get("status") == "success"
     mut_success = mut_res.get("status") == "success"
-    
+
     success_count = sum([exp_success, surv_success, mut_success])
-    
+
     ai_res = {"status": "error", "error": {"error": True, "error_code": "AI_UNAVAILABLE", "message": "Not enough data for interpretation"}}
-    
+
     if success_count >= 2:
         try:
             # We need the data payloads
             exp_data = exp_res.get("data", {})
             surv_data = surv_res.get("data", {})
             mut_data = mut_res.get("data", {})
-            
+
             # Since HTTPClient is injected or global, ai_summary handles it.
             # wait, AI interpretation takes dicts. If one failed, we provide empty dict or handle it.
             ai_data = await generate_ai_summary(exp_data, surv_data, mut_data)
@@ -67,7 +79,7 @@ async def analyze_full(request: AnalysisRequest, background_tasks: BackgroundTas
     status = "success" if success_count == 3 else "partial"
     if success_count == 0:
         status = "error"
-        
+
     response = {
         "status": status,
         "gene": gene,
@@ -79,10 +91,12 @@ async def analyze_full(request: AnalysisRequest, background_tasks: BackgroundTas
         "interpretation": ai_res,
         "reportUrl": None
     }
-    
+
     cache.set("full", gene, cancer, response)
-    
+
     # Trigger PDF generation in background
     background_tasks.add_task(generate_pdf_report, response)
-    
+
+    log_memory(f"analyze_complete_{gene}_{cancer}")
+
     return response

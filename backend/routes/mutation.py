@@ -8,16 +8,17 @@ from backend.utils.logger import StructuredLogger
 logger = StructuredLogger(__name__)
 router = APIRouter()
 
+
 @router.post("/mutation")
 async def analyze_mutation(request: AnalysisRequest):
     valid, gene, cancer, errors = validate_analysis_request(request.gene, request.cancer)
     if not valid:
         return {"status": "error", "error": {"error": True, "error_code": "VALIDATION_ERROR", "message": "Invalid request", "details": errors}}
-        
+
     cached = cache.get("mutation", gene, cancer)
     if cached:
         return {"status": "success", "data": cached}
-        
+
     try:
         result = run_mutation_analysis(gene, cancer)
         cache.set("mutation", gene, cancer, result)

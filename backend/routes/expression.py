@@ -1,23 +1,24 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from backend.models import AnalysisRequest, SectionResult, ErrorDetail
 from backend.analysis.expression_analysis import run_expression_analysis
-from backend.utils.validators import validate_analysis_request
+from backend.utils.validators import validate_analysis_request, get_processed_genes
 from backend.utils.cache_manager import cache
 from backend.utils.logger import StructuredLogger
 
 logger = StructuredLogger(__name__)
 router = APIRouter()
 
+
 @router.post("/expression")
 async def analyze_expression(request: AnalysisRequest):
     valid, gene, cancer, errors = validate_analysis_request(request.gene, request.cancer)
     if not valid:
         return {"status": "error", "error": {"error": True, "error_code": "VALIDATION_ERROR", "message": "Invalid request", "details": errors}}
-        
+
     cached = cache.get("expression", gene, cancer)
     if cached:
         return {"status": "success", "data": cached}
-        
+
     try:
         result = run_expression_analysis(gene, cancer)
         cache.set("expression", gene, cancer, result)
@@ -29,3 +30,8 @@ async def analyze_expression(request: AnalysisRequest):
         logger.error(f"Expression analysis failed: {str(e)}", exc_info=True)
         err = ErrorDetail(error_code="STATISTICAL_FAILURE", message="Expression analysis failed due to an internal error.")
         return {"status": "error", "error": err.model_dump()}
+
+
+@router.get("/genes")
+async def get_genes():
+    return list(get_processed_genes())
